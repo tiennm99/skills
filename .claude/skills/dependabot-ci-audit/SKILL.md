@@ -141,6 +141,21 @@ that makes a bad fix look like a good one — read
   a per-repo `GET /repos/{owner}/{repo}`; it also identifies commit-less repos,
   which would otherwise error and look like a finding.
 - Skip the alerts call for archived repos — it always 403s.
+- **GraphQL `statusCheckRollup` omits Dependabot updater check-runs.** It returns
+  `null` for a commit whose only check-runs come from the updater, so every such
+  repo classifies as `NO_CI` and its `DEPENDABOT_JOB_FAILED` disappears. Measured
+  on the same sha: rollup `null`, REST `/check-runs` `2 x Dependabot=failure`.
+  Read `checkSuites { nodes { checkRuns } }` plus `status { contexts }` instead —
+  that pair reproduces the REST result exactly.
+- **The GraphQL `repositories` connection includes COLLABORATOR by default**, so
+  `repositoryOwner(login: X) { repositories }` returns repos owned by *other*
+  accounts, and double-counts any repo matching two affiliations. Pin both
+  `affiliations: [OWNER]` and `ownerAffiliations: [OWNER]`. Symptom: the count
+  exceeds `gh repo list` and the search API, which agree with each other.
+- **`gh` emits CRLF on Windows.** Piping its output into `sort`/`comm`/`grep -x`
+  makes every value mismatch, since `name\r` != `name`. A `comm` union came out
+  larger than either input this way. Pipe through `tr -d '\r'` first, and use
+  `LC_ALL=C` for both the `sort` and the `comm` so their collation agrees.
 - `gh api --jq` does **not** accept jq's `--arg`. Passing it makes `gh` error and
   print nothing, which silently reads as "no findings".
 - `gh api --jq .field` prints the literal string `null` on a 404, which is
