@@ -1,0 +1,57 @@
+# Batched CI sweep: inventory + default-branch HEAD check state for every repo
+# an owner has, in one paginated query instead of 3 REST calls per repo.
+#
+# TWO THINGS HERE ARE LOAD-BEARING. Changing either silently corrupts the audit.
+#
+# 1. checkSuites + status, NOT statusCheckRollup.
+#    statusCheckRollup returns null for a commit whose only check-runs come from
+#    Dependabot's updater, so every such repo classifies as NO_CI and its
+#    DEPENDABOT_JOB_FAILED disappears. Measured on the same sha: rollup null,
+#    REST /check-runs "2 x Dependabot=failure".
+#    `status` carries third-party commit statuses (Vercel, Cloudflare) that never
+#    appear as check-runs; `checkSuites` carries Actions. Both are required.
+#
+# 2. affiliations AND ownerAffiliations both pinned to [OWNER].
+#    The connection otherwise includes COLLABORATOR, returning repos owned by
+#    other accounts and double-counting repos that match two affiliations.
+#    Symptom: node count exceeds `gh repo list` and the search API, which agree.
+#
+# Page size 25 keeps the requested-node budget under GitHub's 500k ceiling:
+# 25 repos x 100 suites x 50 runs = 125,000.
+query($owner: String!, $endCursor: String) {
+  repositoryOwner(login: $owner) {
+    repositories(
+      first: 25
+      after: $endCursor
+      isFork: false
+      affiliations: [OWNER]
+      ownerAffiliations: [OWNER]
+    ) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        name
+        nameWithOwner
+        isArchived
+        defaultBranchRef {
+          name
+          target {
+            ... on Commit {
+              oid
+              status { contexts { context state } }
+              checkSuites(first: 100) {
+                totalCount
+                nodes {
+                  checkRuns(first: 50) {
+                    totalCount
+                    nodes { name conclusion status }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

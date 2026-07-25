@@ -20,12 +20,41 @@ working directory — resolve `scripts/audit-repos.sh` against this file's locat
 
 ```bash
 bash scripts/audit-repos.sh [owner]                  # owner defaults to authenticated user
-INCLUDE_FORKS=1 bash scripts/audit-repos.sh owner    # forks excluded by default
 REPO_LIMIT=50 bash scripts/audit-repos.sh owner      # sample, for a quick check
+INCLUDE_FORKS=1 CI_SOURCE=rest bash scripts/audit-repos.sh owner   # forks need the REST path
+VERIFY_REPO=name bash scripts/audit-repos.sh owner   # REST spot-check of one repo
+CI_SOURCE=rest bash scripts/audit-repos.sh owner     # whole audit via the old per-repo path
+bash scripts/verify-graphql-vs-rest.sh owner 55      # regression gate: both paths must agree
 ```
 
-Requires `gh` (authenticated) and `jq`. Emits TSV rows for repos **with
-findings**, then a summary. Clean repos are omitted by design.
+Requires `gh` (authenticated) and `jq`. ~221 repos in **~80 s**.
+
+CI state comes from **one batched GraphQL sweep** (`scripts/ci-sweep.graphql` +
+`scripts/classify-ci.jq`), not 3 REST calls per repo — 663 calls/16 min became
+~9 calls/~80 s. `CI_SOURCE=rest` keeps the per-repo path as an independent second
+opinion; `VERIFY_REPO=name` runs it for a single repo.
+
+**Re-run `verify-graphql-vs-rest.sh` after touching the query or the jq.** A
+REST/GraphQL disagreement is what exposed the `statusCheckRollup` blind spot, so
+that gate is the safety net, not a formality. It refuses to pass on partial
+coverage — a diff of two empty sets would otherwise "pass" while proving nothing.
+
+### Output tiers
+
+Three sections; exit status and the finding count reflect **ACTIONABLE only**.
+
+- **ACTIONABLE** — active repos, in priority order: open Dependabot PRs, alerts
+  > 0, `BUILD_FAILED`, alerts `DISABLED`, alerts `ERROR`, then `STUCK` /
+  `DEPENDABOT_JOB_FAILED` (usually cosmetic — say so). Prints `(none)`
+  explicitly, so an empty tier reads as *measured none*, not a missing section.
+- **FROZEN** — archived repos. Never a finding: alerts 403, PRs unmergeable on a
+  read-only repo, Actions frozen, so nothing is actionable until someone
+  unarchives — which this skill does not do. Red ones are still **named** so an
+  archived failure stays discoverable, plus the `UNREADABLE` count and the count
+  of unmergeable archived Dependabot PRs.
+- **WAIVED** — Dependabot off by intent, named and counted.
+
+`EMIT_ALL=1` bypasses tiers and prints every repo flat, for diffing.
 
 Forks are excluded by default: their alerts and Dependabot PRs belong to the
 upstream project, not to this owner.
@@ -94,6 +123,10 @@ inflates failure counts by roughly an order of magnitude.
 Vercel, Cloudflare and similar integrations report through the **commit status**
 API, not check-runs. A repo can appear `NO_CI` while carrying a `pending` status
 that will never resolve. Query both and merge.
+
+The batched sweep does this with `checkSuites` + `status`. It must **never** use
+`statusCheckRollup`, which drops Dependabot updater check-runs entirely — see the
+trap in "Efficiency and API traps" for the measurement.
 
 ### 5. "No alerts" and "alerts disabled" are different answers
 
