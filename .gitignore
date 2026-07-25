@@ -1,0 +1,26 @@
+# Deny by default.
+#
+# This repo holds only its own skill logic. It is also used as a workspace for
+# Claude Code sessions that operate on OTHER repos, so anything not explicitly
+# allowed below is assumed to be scratch work and stays untracked.
+#
+# The pattern is `/*` (top level only), not `*`. That way re-including a
+# directory does not require re-including its contents: nothing inside an
+# allowed directory is ignored, because `/*` never matched it.
+/*
+
+# --- Repo logic and metadata -------------------------------------------------
+!/.claude/
+!/.gitattributes
+!/.gitignore
+!/LICENSE
+!/README.md
+
+# --- Exceptions inside allowed directories -----------------------------------
+# Machine-local permission grants, not shareable project config.
+/.claude/settings.local.json
+# Virtualenv for skill scripts; referenced by the global rules, never committed.
+/.claude/skills/.venv/
+
+# To track something new at the top level, add a matching `!/name` line above.
+# Note this means scratch dirs such as /plans and /docs are NOT tracked.
