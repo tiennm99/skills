@@ -9,6 +9,10 @@
 #   ./audit-repos.sh tiennm99
 #   INCLUDE_FORKS=1 ./audit-repos.sh  # forks are excluded by default
 #
+# Repos listed in config/expected-alerts-disabled.txt have their alerts check
+# waived (reported DISABLED_OK, not a finding). Override the path with
+# EXPECTED_DISABLED_FILE=/some/file, or /dev/null to waive nothing.
+#
 # Output columns:
 #   repo  archived  dependabot_prs  other_prs  alerts  ci_state  detail
 
@@ -18,12 +22,28 @@ OWNER="${1:-$(gh api user --jq .login)}"
 INCLUDE_FORKS="${INCLUDE_FORKS:-0}"
 LIMIT="${REPO_LIMIT:-1000}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXPECTED_DISABLED_FILE="${EXPECTED_DISABLED_FILE:-$SCRIPT_DIR/../config/expected-alerts-disabled.txt}"
+
 command -v gh >/dev/null || { echo "ERROR: gh CLI not found" >&2; exit 1; }
 command -v jq >/dev/null || { echo "ERROR: jq not found" >&2; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "ERROR: gh not authenticated (run: gh auth login)" >&2; exit 1; }
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+# ---------------------------------------------------------------------------
+# 0. Repos whose alerts check is intentionally waived.
+#    Strip comments, CR (the file may be edited on Windows) and blank lines.
+#    A waiver suppresses ONLY the alerts finding -- CI state and Dependabot PRs
+#    are still audited, so real breakage on a waived repo is still reported.
+# ---------------------------------------------------------------------------
+: > "$WORK/waived.txt"
+if [ -f "$EXPECTED_DISABLED_FILE" ]; then
+  sed 's/#.*//' "$EXPECTED_DISABLED_FILE" | tr -d '\r' | awk 'NF{print $1}' > "$WORK/waived.txt"
+fi
+N_WAIVED_CONFIGURED=$(wc -l < "$WORK/waived.txt" | tr -d ' ')
+is_waived() { [ -s "$WORK/waived.txt" ] && grep -qxF "$1" "$WORK/waived.txt"; }
 
 # ---------------------------------------------------------------------------
 # 1. Repo inventory. Forks excluded by default: their alerts and Dependabot
@@ -83,6 +103,12 @@ alerts_for() {
   local repo="$1" archived="$2" out merged
   if [ "$archived" = "true" ]; then
     echo -e "UNREADABLE\t"          # archived repos always 403; skip the call
+    return
+  fi
+  # Checked AFTER archived so a waived repo that is also archived still counts
+  # toward the archived blind spot rather than looking deliberately accepted.
+  if is_waived "$repo"; then
+    echo -e "DISABLED_OK\tnot checked: alerts disabled by intent"
     return
   fi
   out=$(gh api --paginate "repos/$OWNER/$repo/dependabot/alerts?state=open&per_page=100" 2>/dev/null)
@@ -156,6 +182,7 @@ ci_for() {
 # 5. Sweep
 # ---------------------------------------------------------------------------
 printf 'repo\tarchived\tdependabot_prs\tother_prs\talerts\tci_state\tdetail\n'
+N_WAIVED_HIT=0
 while IFS=$'\t' read -r name isfork isarch branch; do
   [ -z "$name" ] && continue
   IFS=$'\t' read -r alerts alert_detail <<< "$(alerts_for "$name" "$isarch")"
@@ -167,6 +194,9 @@ while IFS=$'\t' read -r name isfork isarch branch; do
   # every archived repo and would otherwise flood the report. It is surfaced
   # as a count in the summary instead, so the blind spot stays visible.
   # DISABLED IS a finding: alerts were switched off on a live repo.
+  # DISABLED_OK is NOT: the operator declared that state intentional. It is
+  # still counted and named in the summary so the waiver never becomes invisible.
+  [ "$alerts" = "DISABLED_OK" ] && N_WAIVED_HIT=$((N_WAIVED_HIT + 1))
   finding=0
   [ "$dpr" != "0" ] && finding=1
   [ "$alerts" = "DISABLED" ] && finding=1
@@ -202,6 +232,13 @@ $FORK_LINE
 open_dependabot_prs:$TOTAL_DPR
 open_other_prs:     $TOTAL_OPR
 
+alerts_check_waived: $N_WAIVED_HIT of $N_WAIVED_CONFIGURED configured
+$(if [ "$N_WAIVED_HIT" -gt 0 ]; then
+    echo "  These repos were NOT measured -- alerts are disabled by intent, so any"
+    echo "  advisory they would report is unseen. CI and PRs were still audited:"
+    while read -r w; do [ -n "$w" ] && echo "    - $w"; done < "$WORK/waived.txt"
+  fi)
+
 NOTE: alert state for the $N_ARCH archived repos is UNREADABLE, not zero.
 GitHub returns 403 on the alerts endpoint for archived repos, so their
 vulnerability exposure is UNKNOWN and cannot be reported as clean.
@@ -213,6 +250,9 @@ CI states: GREEN | NO_CI | NO_COMMITS | BUILD_FAILED | DEPENDABOT_JOB_FAILED | S
                           terminal state (common on archived repos).
   NO_COMMITS            = empty repo, nothing to judge.
 
-alerts: a number | UNREADABLE (archived, unknown) | DISABLED (off) | ERROR
+alerts: a number | UNREADABLE (archived) | DISABLED (off) | DISABLED_OK (waived)
+        | ERROR
   ERROR is also unknown, never clean -- re-run those repos before concluding.
+  UNREADABLE, DISABLED and DISABLED_OK are all UNMEASURED. Only a number is a
+  measurement. Never sum them into a single "0 advisories" claim.
 SUMMARY

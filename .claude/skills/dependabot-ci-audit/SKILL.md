@@ -30,6 +30,23 @@ findings**, then a summary. Clean repos are omitted by design.
 Forks are excluded by default: their alerts and Dependabot PRs belong to the
 upstream project, not to this owner.
 
+### Waiving the alerts check on specific repos
+
+`config/expected-alerts-disabled.txt` lists repos where Dependabot alerts are
+disabled **on purpose**. One repo name per line, `#` for comments. Those repos
+report `DISABLED_OK` instead of `DISABLED` and are not findings.
+
+Only the alerts check is waived. CI state and Dependabot PRs are still audited,
+so a real build failure or an open PR on a waived repo still surfaces — never
+skip a whole repo, or genuine breakage disappears.
+
+A waiver is an **unmeasured** repo, not a clean one: the API call is skipped, so
+re-enabled alerts and any advisory they report go unseen. The summary therefore
+names every waived repo and counts them. Say this out loud when reporting; do
+not fold waived repos into a "no advisories" total.
+
+Currently waived: `claudekit-engineer`, `claudekit-marketing`.
+
 ## The five interpretation rules that make this correct
 
 Getting these wrong produces confidently false reports. Apply all five.
@@ -74,6 +91,10 @@ A 403 mentioning `disabled` means Dependabot alerts are switched **off** for
 that repo, so nothing is being detected. That is absence of information, not
 absence of risk — and on an active repo it is itself a finding.
 
+Unless the repo is waived (see above), in which case the operator has accepted
+that state. `DISABLED_OK` still means unmeasured — report it as an accepted
+blind spot, never as a measured zero.
+
 ## Reporting
 
 Lead with what is actionable, in this order:
@@ -84,8 +105,9 @@ Lead with what is actionable, in this order:
 4. **Alerts `DISABLED`** on active repos — unmeasured exposure.
 5. **`DEPENDABOT_JOB_FAILED` / `STUCK`** — usually cosmetic; say so.
 
-Always state the archived blind spot with its count. Never present a total that
-silently mixes measured zeros with unreadable unknowns.
+Always state the archived blind spot with its count, and name any waived repos
+alongside it. Never present a total that silently mixes measured zeros with
+unreadable, disabled or waived unknowns.
 
 ## Diagnosing why Dependabot opened no PR
 

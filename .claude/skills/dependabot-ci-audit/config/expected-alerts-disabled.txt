@@ -1,0 +1,15 @@
+# Repos where Dependabot alerts are INTENTIONALLY disabled.
+#
+# Format: one repo NAME per line (no owner prefix). "#" begins a comment.
+#
+# Effect: the alerts API call is skipped for these repos and the state is
+# reported as DISABLED_OK, which is not a finding. CI state and Dependabot PRs
+# are STILL audited normally -- only the alerts check is waived, so a real build
+# failure or an open Dependabot PR here is still reported.
+#
+# Trade-off: because the call is skipped, alerts being re-enabled on one of
+# these repos will NOT be noticed, and any advisory it then reports goes unseen.
+# Delete the line to resume checking that repo.
+
+claudekit-engineer
+claudekit-marketing
