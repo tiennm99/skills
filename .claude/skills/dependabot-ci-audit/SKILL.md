@@ -30,15 +30,25 @@ findings**, then a summary. Clean repos are omitted by design.
 Forks are excluded by default: their alerts and Dependabot PRs belong to the
 upstream project, not to this owner.
 
-### Waiving the alerts check on specific repos
+### Waiving Dependabot checks on specific repos
 
-`config/expected-alerts-disabled.txt` lists repos where Dependabot alerts are
-disabled **on purpose**. One repo name per line, `#` for comments. Those repos
-report `DISABLED_OK` instead of `DISABLED` and are not findings.
+`config/expected-dependabot-disabled.txt` lists repos where Dependabot is
+disabled **on purpose**. One repo name per line, `#` for comments.
 
-Only the alerts check is waived. CI state and Dependabot PRs are still audited,
-so a real build failure or an open PR on a waived repo still surfaces — never
-skip a whole repo, or genuine breakage disappears.
+Waived on those repos:
+
+- alerts report `DISABLED_OK` instead of `DISABLED`
+- `DEPENDABOT_JOB_FAILED` stops counting — with the updater off, its leftover
+  check-runs cannot re-run, so they are declared noise
+
+Still reported on those repos:
+
+- `BUILD_FAILED` and `STUCK` — the project's own CI and third-party statuses have
+  nothing to do with Dependabot
+- open Dependabot PRs — directly mergeable, and their existence contradicts the
+  premise that Dependabot is off
+
+Never skip a whole repo, or genuine breakage disappears with the noise.
 
 A waiver is an **unmeasured** repo, not a clean one: the API call is skipped, so
 re-enabled alerts and any advisory they report go unseen. The summary therefore

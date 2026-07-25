@@ -9,9 +9,10 @@
 #   ./audit-repos.sh tiennm99
 #   INCLUDE_FORKS=1 ./audit-repos.sh  # forks are excluded by default
 #
-# Repos listed in config/expected-alerts-disabled.txt have their alerts check
-# waived (reported DISABLED_OK, not a finding). Override the path with
-# EXPECTED_DISABLED_FILE=/some/file, or /dev/null to waive nothing.
+# Repos listed in config/expected-dependabot-disabled.txt have their Dependabot
+# findings waived: alerts report DISABLED_OK, and leftover updater check-run
+# failures stop counting. Their own build failures still count. Override the path
+# with EXPECTED_DISABLED_FILE=/some/file, or /dev/null to waive nothing.
 #
 # Output columns:
 #   repo  archived  dependabot_prs  other_prs  alerts  ci_state  detail
@@ -23,7 +24,7 @@ INCLUDE_FORKS="${INCLUDE_FORKS:-0}"
 LIMIT="${REPO_LIMIT:-1000}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-EXPECTED_DISABLED_FILE="${EXPECTED_DISABLED_FILE:-$SCRIPT_DIR/../config/expected-alerts-disabled.txt}"
+EXPECTED_DISABLED_FILE="${EXPECTED_DISABLED_FILE:-$SCRIPT_DIR/../config/expected-dependabot-disabled.txt}"
 
 command -v gh >/dev/null || { echo "ERROR: gh CLI not found" >&2; exit 1; }
 command -v jq >/dev/null || { echo "ERROR: jq not found" >&2; exit 1; }
@@ -33,10 +34,12 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
 # ---------------------------------------------------------------------------
-# 0. Repos whose alerts check is intentionally waived.
+# 0. Repos whose Dependabot checks are intentionally waived.
 #    Strip comments, CR (the file may be edited on Windows) and blank lines.
-#    A waiver suppresses ONLY the alerts finding -- CI state and Dependabot PRs
-#    are still audited, so real breakage on a waived repo is still reported.
+#    A waiver suppresses Dependabot-state findings only: the alerts check and
+#    leftover updater check-run failures. The repo's own build failures, stuck
+#    third-party statuses and open Dependabot PRs are still reported, so real
+#    breakage on a waived repo never disappears.
 # ---------------------------------------------------------------------------
 : > "$WORK/waived.txt"
 if [ -f "$EXPECTED_DISABLED_FILE" ]; then
@@ -183,6 +186,7 @@ ci_for() {
 # ---------------------------------------------------------------------------
 printf 'repo\tarchived\tdependabot_prs\tother_prs\talerts\tci_state\tdetail\n'
 N_WAIVED_HIT=0
+N_WAIVED_CI=0
 while IFS=$'\t' read -r name isfork isarch branch; do
   [ -z "$name" ] && continue
   IFS=$'\t' read -r alerts alert_detail <<< "$(alerts_for "$name" "$isarch")"
@@ -198,12 +202,24 @@ while IFS=$'\t' read -r name isfork isarch branch; do
   # still counted and named in the summary so the waiver never becomes invisible.
   [ "$alerts" = "DISABLED_OK" ] && N_WAIVED_HIT=$((N_WAIVED_HIT + 1))
   finding=0
+  # An open Dependabot PR stays a finding even on a waived repo: it is directly
+  # mergeable, and its existence contradicts the premise that Dependabot is off.
   [ "$dpr" != "0" ] && finding=1
   [ "$alerts" = "DISABLED" ] && finding=1
   [ "$alerts" = "ERROR" ] && finding=1
   case "$alerts" in ''|*[!0-9]*) ;; *) [ "$alerts" -gt 0 ] && finding=1 ;; esac
+
   # NO_COMMITS is not a finding: an empty repo has nothing to build or expose.
-  { [ "$ci" != "GREEN" ] && [ "$ci" != "NO_CI" ] && [ "$ci" != "NO_COMMITS" ]; } && finding=1
+  # On a waived repo DEPENDABOT_JOB_FAILED is not a finding either -- the updater
+  # is off by intent, so its leftover check-runs are declared noise and cannot
+  # re-run. BUILD_FAILED and STUCK still count on a waived repo: those are the
+  # project's own CI and third-party statuses, nothing to do with Dependabot.
+  case "$ci" in
+    GREEN|NO_CI|NO_COMMITS) ;;
+    DEPENDABOT_JOB_FAILED)
+      if is_waived "$name"; then N_WAIVED_CI=$((N_WAIVED_CI + 1)); else finding=1; fi ;;
+    *) finding=1 ;;
+  esac
 
   if [ "$finding" = "1" ]; then
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -232,11 +248,13 @@ $FORK_LINE
 open_dependabot_prs:$TOTAL_DPR
 open_other_prs:     $TOTAL_OPR
 
-alerts_check_waived: $N_WAIVED_HIT of $N_WAIVED_CONFIGURED configured
+dependabot_waived:  $N_WAIVED_HIT of $N_WAIVED_CONFIGURED configured
 $(if [ "$N_WAIVED_HIT" -gt 0 ]; then
-    echo "  These repos were NOT measured -- alerts are disabled by intent, so any"
-    echo "  advisory they would report is unseen. CI and PRs were still audited:"
+    echo "  These repos were NOT measured -- Dependabot is disabled by intent, so any"
+    echo "  advisory they would report is unseen. Their own build failures, stuck"
+    echo "  statuses and open Dependabot PRs were still audited:"
     while read -r w; do [ -n "$w" ] && echo "    - $w"; done < "$WORK/waived.txt"
+    [ "$N_WAIVED_CI" -gt 0 ] && echo "  $N_WAIVED_CI of them carry leftover updater check-run failures (suppressed)."
   fi)
 
 NOTE: alert state for the $N_ARCH archived repos is UNREADABLE, not zero.
