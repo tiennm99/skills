@@ -31,15 +31,16 @@ func run() error {
 	defaults := audit.DefaultOptions()
 
 	var (
-		owner        = flag.String("owner", "", "repository owner; defaults to the authenticated user (also accepted as a positional argument)")
-		limit        = flag.Int("limit", defaults.Limit, "audit at most N repos, most recently pushed first; applied before forks are filtered out")
-		ciSource     = flag.String("ci-source", defaults.CISource, "where CI state comes from: graphql (one batched sweep) or rest (3 calls per repo, independent second opinion)")
-		includeForks = flag.Bool("include-forks", false, "audit forks too; requires -ci-source rest")
-		verifyRepo   = flag.String("verify-repo", "", "audit ONE repo through the REST path and print its classification")
-		emitAll      = flag.Bool("emit-all", false, "print every audited repo as a flat row instead of tiers, for diffing runs")
-		concurrency  = flag.Int("concurrency", defaults.Concurrency, "per-repo calls in flight; higher is faster until GitHub's secondary rate limit pushes back")
-		waiverFile   = flag.String("waiver-file", "", "read waived repos from this file instead of the compiled-in waivers.txt")
-		noWaivers    = flag.Bool("no-waivers", false, "waive nothing, so every repo's Dependabot state is measured")
+		owner           = flag.String("owner", "", "repository owner; defaults to the authenticated user (also accepted as a positional argument)")
+		limit           = flag.Int("limit", defaults.Limit, "audit at most N in-scope repos, most recently pushed first")
+		ciSource        = flag.String("ci-source", defaults.CISource, "where CI state comes from: graphql (one batched sweep) or rest (3 calls per repo, independent second opinion)")
+		includeForks    = flag.Bool("include-forks", false, "audit forks too; requires -ci-source rest")
+		includeArchived = flag.Bool("include-archived", false, "audit archived repos too, as a FROZEN tier; skipped by default because nothing on them is actionable without unarchiving")
+		verifyRepo      = flag.String("verify-repo", "", "audit ONE repo through the REST path and print its classification")
+		emitAll         = flag.Bool("emit-all", false, "print every audited repo as a flat row instead of tiers, for diffing runs")
+		concurrency     = flag.Int("concurrency", defaults.Concurrency, "per-repo calls in flight; higher is faster until GitHub's secondary rate limit pushes back")
+		waiverFile      = flag.String("waiver-file", "", "read waived repos from this file instead of the compiled-in waivers.txt")
+		noWaivers       = flag.Bool("no-waivers", false, "waive nothing, so every repo's Dependabot state is measured")
 	)
 	flag.Usage = usage
 	flag.Parse()
@@ -62,6 +63,7 @@ func run() error {
 	opts.Limit = *limit
 	opts.CISource = *ciSource
 	opts.IncludeForks = *includeForks
+	opts.IncludeArchived = *includeArchived
 	opts.Concurrency = *concurrency
 
 	waivers, err := loadWaivers(*waiverFile, *noWaivers)
@@ -168,9 +170,14 @@ Examples:
   audit-repos                              audit the authenticated user
   audit-repos some-org                     audit an organization
   audit-repos -limit 50 some-org           quick sample of the 50 newest-pushed
+  audit-repos -include-archived some-org   add archived repos as a FROZEN tier
   audit-repos -ci-source rest some-org     whole audit via the per-repo path
   audit-repos -verify-repo name some-org   REST spot-check of one repo
   audit-repos -include-forks -ci-source rest some-org
+
+Archived repos are skipped by default: nothing on them is actionable without
+unarchiving. The summary always reports how many were skipped -- they are
+unmeasured, not clean.
 
 Authentication comes from GH_TOKEN, GITHUB_TOKEN, or `+"`gh auth token`"+`, in that
 order. Nothing else is read from the environment.

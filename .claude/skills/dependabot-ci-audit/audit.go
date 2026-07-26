@@ -35,12 +35,16 @@ const (
 // Options configures a run. The zero value is not usable; see DefaultOptions.
 type Options struct {
 	Owner string
-	// Limit slices by push date, before forks are filtered out.
-	Limit        int
-	CISource     string
-	IncludeForks bool
-	Concurrency  int
-	Waivers      Waivers
+	// Limit caps how many IN-SCOPE repos are audited, most recently pushed first.
+	Limit    int
+	CISource string
+	// IncludeForks and IncludeArchived widen the scope; both default to false.
+	// Archived repos are skipped because nothing on them can be acted on without
+	// unarchiving, which this tool does not do.
+	IncludeForks    bool
+	IncludeArchived bool
+	Concurrency     int
+	Waivers         Waivers
 }
 
 // DefaultOptions returns the settings a plain audit uses.
@@ -140,19 +144,28 @@ func (r Row) IsFinding(waived bool) bool {
 // Result is everything one run measured. Rows are in inventory order (most
 // recently pushed first) and cover every repo in scope, not just findings.
 type Result struct {
-	Owner        string
-	CISource     string
-	IncludeForks bool
-	Rows         []Row
-	Forks        int
-	Waivers      Waivers
+	Owner           string
+	CISource        string
+	IncludeForks    bool
+	IncludeArchived bool
+	Rows            []Row
+	// Forks and Archived count what the account HAS, whether or not it was
+	// audited, so the summary can state what went unmeasured.
+	Forks    int
+	Archived int
+	// SkippedDependabotPRs counts open Dependabot PRs on archived repos that were
+	// skipped. Reported anyway: unarchiving makes them mergeable, so they must not
+	// disappear along with the repo.
+	SkippedDependabotPRs int
+	Waivers              Waivers
 
 	TotalDependabotPRs int
 	TotalOtherPRs      int
 }
 
-// Archived counts repos that nothing can be done to without unarchiving.
-func (res *Result) Archived() int {
+// ArchivedAudited counts archived repos that are actually in the rows, which is
+// zero unless -include-archived was passed.
+func (res *Result) ArchivedAudited() int {
 	n := 0
 	for _, r := range res.Rows {
 		if r.Archived {
@@ -163,7 +176,7 @@ func (res *Result) Archived() int {
 }
 
 // Active counts the repos the ACTIONABLE tier is drawn from.
-func (res *Result) Active() int { return len(res.Rows) - res.Archived() }
+func (res *Result) Active() int { return len(res.Rows) - res.ArchivedAudited() }
 
 // Run performs the audit. It makes no writes of any kind.
 func Run(ctx context.Context, client *ghapi.Client, opts Options) (*Result, error) {
@@ -171,18 +184,18 @@ func Run(ctx context.Context, client *ghapi.Client, opts Options) (*Result, erro
 		return nil, err
 	}
 
-	inventory, err := FetchInventory(ctx, client, opts.Owner, opts.Limit)
+	inventory, err := FetchInventory(ctx, client, opts.Owner)
 	if err != nil {
 		return nil, err
 	}
-	scope := inventory.InScope(opts.IncludeForks)
+	scope := inventory.InScope(opts.IncludeForks, opts.IncludeArchived, opts.Limit)
 
 	prs, err := FetchOpenPullRequests(ctx, client, opts.Owner)
 	if err != nil {
 		return nil, err
 	}
 
-	alerts := FetchAlerts(ctx, client, opts.Owner, scope, opts.Waivers, opts.Concurrency)
+	alerts := FetchAlerts(ctx, client, opts.Owner, scope.Repos, opts.Waivers, opts.Concurrency)
 
 	var ci map[string]CIResult
 	if opts.CISource == CISourceGraphQL {
@@ -190,20 +203,25 @@ func Run(ctx context.Context, client *ghapi.Client, opts Options) (*Result, erro
 			return nil, err
 		}
 	} else {
-		ci = FetchCIViaREST(ctx, client, opts.Owner, scope, opts.Concurrency)
+		ci = FetchCIViaREST(ctx, client, opts.Owner, scope.Repos, opts.Concurrency)
 	}
 
 	res := &Result{
 		Owner:              opts.Owner,
 		CISource:           opts.CISource,
 		IncludeForks:       opts.IncludeForks,
-		Forks:              inventory.Forks,
+		IncludeArchived:    opts.IncludeArchived,
+		Forks:              scope.Forks,
+		Archived:           scope.Archived,
 		Waivers:            opts.Waivers,
 		TotalDependabotPRs: prs.TotalDependabot,
 		TotalOtherPRs:      prs.TotalOther,
-		Rows:               make([]Row, 0, len(scope)),
+		Rows:               make([]Row, 0, len(scope.Repos)),
 	}
-	for _, repo := range scope {
+	for _, name := range scope.ArchivedSkipped {
+		res.SkippedDependabotPRs += prs.Dependabot[name]
+	}
+	for _, repo := range scope.Repos {
 		state, ok := ci[repo.Name]
 		if !ok {
 			// A repo absent from the sweep is unknown, never a silent GREEN.

@@ -129,12 +129,51 @@ func TestTiersSeparatesArchivedFromActionable(t *testing.T) {
 	}
 }
 
-// An empty tier must read as MEASURED none, never as a section that failed to
-// render, and the archived blind spot must always be stated with its count.
-func TestWriteReportStatesEmptyAndUnknownExplicitly(t *testing.T) {
+// Skipping archived repos removes them from the tiers. It must NOT remove them
+// from the disclosure, or an account that is mostly archived reads as fully
+// audited and clean.
+func TestWriteReportDisclosesSkippedArchived(t *testing.T) {
 	res := &Result{
-		Owner:   "someone",
-		Waivers: ParseWaivers(""),
+		Owner:                "someone",
+		Waivers:              ParseWaivers(""),
+		Archived:             195,
+		SkippedDependabotPRs: 3,
+		Rows: []Row{
+			{Name: "clean", Alerts: AlertState{Count: 0}, CI: CIGreen},
+		},
+	}
+
+	var out strings.Builder
+	WriteReport(&out, res)
+	report := out.String()
+
+	for _, want := range []string{
+		"=== ACTIONABLE (0)",
+		"(none)",
+		"repos_audited:      1  (active)",
+		"archived_skipped:   195",
+		"195 archived repos were SKIPPED, not measured",
+		"UNKNOWN, not zero",
+		"-include-archived",
+		"3 open Dependabot PR(s) sit on those repos, mergeable once unarchived.",
+	} {
+		if !strings.Contains(report, want) {
+			t.Errorf("report is missing %q\n---\n%s", want, report)
+		}
+	}
+	if strings.Contains(report, "FROZEN") {
+		t.Errorf("skipped archived repos must not produce a FROZEN tier\n---\n%s", report)
+	}
+}
+
+// An empty tier must read as MEASURED none, never as a section that failed to
+// render, and audited archived repos still get the FROZEN tier.
+func TestWriteReportWithArchivedIncluded(t *testing.T) {
+	res := &Result{
+		Owner:           "someone",
+		Waivers:         ParseWaivers(""),
+		IncludeArchived: true,
+		Archived:        1,
 		Rows: []Row{
 			{Name: "clean", Alerts: AlertState{Count: 0}, CI: CIGreen},
 			{Name: "old", Archived: true, Alerts: AlertState{Label: AlertsUnreadable}, CI: CIGreen},
@@ -146,8 +185,6 @@ func TestWriteReportStatesEmptyAndUnknownExplicitly(t *testing.T) {
 	report := out.String()
 
 	for _, want := range []string{
-		"=== ACTIONABLE (0)",
-		"(none)",
 		"=== FROZEN (1 archived)",
 		"UNREADABLE on all 1 (403). UNKNOWN, not zero.",
 		"repos_audited:      2  (active=1 archived=1)",
@@ -155,6 +192,21 @@ func TestWriteReportStatesEmptyAndUnknownExplicitly(t *testing.T) {
 		if !strings.Contains(report, want) {
 			t.Errorf("report is missing %q\n---\n%s", want, report)
 		}
+	}
+	if strings.Contains(report, "archived_skipped") {
+		t.Error("nothing was skipped, so the report must not claim it was")
+	}
+}
+
+// An account with no archived repos should say nothing about archived repos.
+func TestWriteReportOmitsArchivedNoteWhenNoneExist(t *testing.T) {
+	res := &Result{Owner: "someone", Waivers: ParseWaivers(""), Rows: []Row{{Name: "only", CI: CIGreen}}}
+
+	var out strings.Builder
+	WriteReport(&out, res)
+
+	if report := out.String(); strings.Contains(report, "archived") && !strings.Contains(report, "common on archived repos") {
+		t.Errorf("unexpected archived commentary\n---\n%s", report)
 	}
 }
 

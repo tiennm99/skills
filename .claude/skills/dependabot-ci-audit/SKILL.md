@@ -23,6 +23,7 @@ directory first** — it is usually not the working directory.
 go run ./cmd/audit-repos                              # authenticated user
 go run ./cmd/audit-repos some-org                     # an owner
 go run ./cmd/audit-repos -limit 50 some-org           # sample, for a quick check
+go run ./cmd/audit-repos -include-archived some-org   # add archived repos as a FROZEN tier
 go run ./cmd/audit-repos -ci-source rest some-org     # whole audit via the per-repo path
 go run ./cmd/audit-repos -verify-repo name some-org   # REST spot-check of one repo
 go run ./cmd/audit-repos -include-forks -ci-source rest some-org
@@ -55,23 +56,43 @@ network and does not replace the gate.
 
 ### Output tiers
 
-Three sections; exit status and the finding count reflect **ACTIONABLE only**.
+The finding count reflects **ACTIONABLE only**.
 
 - **ACTIONABLE** — active repos, in priority order: open Dependabot PRs, alerts
   > 0, `BUILD_FAILED`, alerts `DISABLED`, alerts `ERROR`, then `STUCK` /
   `DEPENDABOT_JOB_FAILED` (usually cosmetic — say so). Prints `(none)`
   explicitly, so an empty tier reads as *measured none*, not a missing section.
-- **FROZEN** — archived repos. Never a finding: alerts 403, PRs unmergeable on a
-  read-only repo, Actions frozen, so nothing is actionable until someone
-  unarchives — which this skill does not do. Red ones are still **named** so an
-  archived failure stays discoverable, plus the `UNREADABLE` count and the count
-  of unmergeable archived Dependabot PRs.
+- **FROZEN** — archived repos, **only with `-include-archived`**. Never a finding:
+  alerts 403, PRs unmergeable on a read-only repo, Actions frozen, so nothing is
+  actionable until someone unarchives — which this skill does not do. Red ones are
+  still **named** so an archived failure stays discoverable, plus the `UNREADABLE`
+  count and the count of unmergeable archived Dependabot PRs.
 - **WAIVED** — Dependabot off by intent, named and counted.
 
 `-emit-all` bypasses tiers and prints every repo flat, for diffing.
 
-Forks are excluded by default: their alerts and Dependabot PRs belong to the
-upstream project, not to this owner.
+### What is out of scope by default
+
+**Archived repos are skipped.** Nothing on them is actionable without
+unarchiving, so auditing them mostly produced noise. Pass `-include-archived` to
+get the FROZEN tier back — do that whenever the user asks about archived repos,
+or asks for a complete picture rather than a to-do list.
+
+Skipping is not the same as clearing. The summary always reports
+`archived_skipped: N`, and states that their exposure is **unknown, not zero**.
+Carry that into any report: on an account that is mostly archived, "0 findings"
+otherwise reads as "everything is fine" when most repos were never measured. Open
+Dependabot PRs stranded on skipped repos are counted separately in that note,
+because unarchiving makes them mergeable.
+
+**Forks are excluded** too: their alerts and Dependabot PRs belong to the
+upstream project, not to this owner. `-include-forks` requires `-ci-source rest`.
+
+Each excluded repo is attributed to exactly one reason, so `archived_skipped` and
+`forks_excluded` never double-count the same repo.
+
+`-limit N` audits the N most recently pushed **in-scope** repos — the filters
+apply first, so a limit means N repos actually audited.
 
 ### Waiving Dependabot checks on specific repos
 
@@ -115,15 +136,17 @@ Currently waived: `claudekit-engineer`, `claudekit-marketing`.
 
 Getting these wrong produces confidently false reports. Apply all five.
 
-### 1. On archived repos, alerts are UNREADABLE — never zero
+### 1. Archived repos are UNMEASURED — never zero
 
 `GET /repos/{owner}/{repo}/dependabot/alerts` returns **HTTP 403** for any
 archived repo: `"Dependabot alerts are not available for archived repositories."`
 
-Report those as `UNREADABLE` and state it explicitly, with a count, in the
-summary. Never render an archived repo as having zero advisories — that turns
-*unknown* into *clean*, the most damaging error in this domain. Measuring them
-would require unarchiving, which this skill does not do.
+They are skipped by default, and skipping changes nothing about this rule: a
+skipped repo is exactly as unmeasured as an `UNREADABLE` one. Never render an
+archived repo as having zero advisories, and never let `archived_skipped: N`
+quietly drop out of a report — that turns *unknown* into *clean*, the most
+damaging error in this domain. Measuring them would require unarchiving, which
+this skill does not do.
 
 ### 2. A check-run named `Dependabot` is not application CI
 
@@ -173,9 +196,12 @@ Lead with what is actionable, in this order:
 4. **Alerts `DISABLED`** on active repos — unmeasured exposure.
 5. **`DEPENDABOT_JOB_FAILED` / `STUCK`** — usually cosmetic; say so.
 
-Always state the archived blind spot with its count, and name any waived repos
-alongside it. Never present a total that silently mixes measured zeros with
-unreadable, disabled or waived unknowns.
+Always state the archived blind spot with its count — skipped repos included —
+and name any waived repos alongside it. Never present a total that silently mixes
+measured zeros with skipped, unreadable, disabled or waived unknowns. State how
+many repos were actually measured out of how many exist; on a mostly-archived
+account those two numbers are far apart, and only the first one supports a claim
+about advisories.
 
 ## Diagnosing why Dependabot opened no PR
 

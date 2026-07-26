@@ -69,6 +69,11 @@ func run() error {
 	}
 	opts.Limit = *limit
 	opts.Concurrency = *concurrency
+	// Archived repos are audited here even though the audit skips them by
+	// default. They are the main source of STUCK states -- a check or third-party
+	// status that never reached a terminal state -- so excluding them would leave
+	// the classifier's least-exercised branch uncompared.
+	opts.IncludeArchived = true
 
 	fmt.Printf("== gate: %s, slice=%d ==\n", opts.Owner, opts.Limit)
 

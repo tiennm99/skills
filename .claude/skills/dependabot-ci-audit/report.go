@@ -57,7 +57,6 @@ func (res *Result) Tiers() Tiers {
 // WriteReport prints the tiered report followed by the summary.
 func WriteReport(w io.Writer, res *Result) {
 	t := res.Tiers()
-	archived := res.Archived()
 
 	fmt.Fprintf(w, "=== ACTIONABLE (%d) — active repos, act now ===\n", len(t.Actionable))
 	if len(t.Actionable) == 0 {
@@ -68,14 +67,19 @@ func WriteReport(w io.Writer, res *Result) {
 		writeRows(w, t.Actionable)
 	}
 
-	fmt.Fprintf(w, "\n=== FROZEN (%d archived) — needs unarchiving before anything is actionable ===\n", archived)
-	fmt.Fprintf(w, "alert state: UNREADABLE on all %d (403). UNKNOWN, not zero.\n", archived)
-	fmt.Fprintf(w, "open Dependabot PRs on archived repos: %d (unmergeable while archived)\n", t.FrozenDependabotPRs)
-	if len(t.Frozen) == 0 {
-		fmt.Fprintln(w, "non-green CI: (none)")
-	} else {
-		fmt.Fprintf(w, "non-green CI (%d), listed so they stay discoverable:\n", len(t.Frozen))
-		writeRows(w, t.Frozen)
+	// The FROZEN tier only exists when archived repos were audited. Skipping them
+	// is the default, and the summary discloses the count either way.
+	if res.IncludeArchived {
+		archived := res.ArchivedAudited()
+		fmt.Fprintf(w, "\n=== FROZEN (%d archived) — needs unarchiving before anything is actionable ===\n", archived)
+		fmt.Fprintf(w, "alert state: UNREADABLE on all %d (403). UNKNOWN, not zero.\n", archived)
+		fmt.Fprintf(w, "open Dependabot PRs on archived repos: %d (unmergeable while archived)\n", t.FrozenDependabotPRs)
+		if len(t.Frozen) == 0 {
+			fmt.Fprintln(w, "non-green CI: (none)")
+		} else {
+			fmt.Fprintf(w, "non-green CI (%d), listed so they stay discoverable:\n", len(t.Frozen))
+			writeRows(w, t.Frozen)
+		}
 	}
 
 	writeSummary(w, res, t)
@@ -101,7 +105,6 @@ func writeRows(w io.Writer, rows []Row) {
 }
 
 func writeSummary(w io.Writer, res *Result, t Tiers) {
-	archived := res.Archived()
 	forkLabel := "forks_excluded:"
 	if res.IncludeForks {
 		forkLabel = "forks_included:"
@@ -109,7 +112,13 @@ func writeSummary(w io.Writer, res *Result, t Tiers) {
 
 	fmt.Fprintf(w, "\n=== SUMMARY ===\n")
 	fmt.Fprintf(w, "owner:              %s\n", res.Owner)
-	fmt.Fprintf(w, "repos_audited:      %d  (active=%d archived=%d)\n", len(res.Rows), res.Active(), archived)
+	if res.IncludeArchived {
+		fmt.Fprintf(w, "repos_audited:      %d  (active=%d archived=%d)\n",
+			len(res.Rows), res.Active(), res.ArchivedAudited())
+	} else {
+		fmt.Fprintf(w, "repos_audited:      %d  (active)\n", len(res.Rows))
+		fmt.Fprintf(w, "%-20s%d\n", "archived_skipped:", res.Archived)
+	}
 	fmt.Fprintf(w, "%-20s%d\n", forkLabel, res.Forks)
 	fmt.Fprintf(w, "open_dependabot_prs:%d\n", res.TotalDependabotPRs)
 	fmt.Fprintf(w, "open_other_prs:     %d\n", res.TotalOtherPRs)
@@ -127,11 +136,9 @@ func writeSummary(w io.Writer, res *Result, t Tiers) {
 		}
 	}
 
-	fmt.Fprintf(w, `
-NOTE: alert state for the %d archived repos is UNREADABLE, not zero.
-GitHub returns 403 on the alerts endpoint for archived repos, so their
-vulnerability exposure is UNKNOWN and cannot be reported as clean.
+	writeArchivedNote(w, res)
 
+	fmt.Fprint(w, `
 CI states: GREEN | NO_CI | NO_COMMITS | BUILD_FAILED | DEPENDABOT_JOB_FAILED | STUCK
   BUILD_FAILED          = the project's own build/test failed. Real.
   DEPENDABOT_JOB_FAILED = Dependabot's updater job failed, app CI is fine.
@@ -144,7 +151,39 @@ alerts: a number | UNREADABLE (archived) | DISABLED (off) | DISABLED_OK (waived)
   ERROR is also unknown, never clean -- re-run those repos before concluding.
   UNREADABLE, DISABLED and DISABLED_OK are all UNMEASURED. Only a number is a
   measurement. Never sum them into a single "0 advisories" claim.
-`, archived)
+`)
+}
+
+// writeArchivedNote states the archived blind spot.
+//
+// Skipping archived repos removes them from the tiers but must NOT remove them
+// from the disclosure: an account that is mostly archived would otherwise read as
+// fully audited. Whether they were skipped or listed, their exposure is unknown
+// rather than zero, and this note is what keeps that on the page.
+func writeArchivedNote(w io.Writer, res *Result) {
+	if res.Archived == 0 {
+		return
+	}
+	if res.IncludeArchived {
+		fmt.Fprintf(w, `
+NOTE: alert state for the %d archived repos is UNREADABLE, not zero.
+GitHub returns 403 on the alerts endpoint for archived repos, so their
+vulnerability exposure is UNKNOWN and cannot be reported as clean.
+`, res.ArchivedAudited())
+		return
+	}
+
+	fmt.Fprintf(w, `
+NOTE: %d archived repos were SKIPPED, not measured. Nothing on them is
+actionable without unarchiving -- the alerts endpoint 403s, PRs are unmergeable
+on a read-only repo, and Actions are frozen -- so they are out of scope by
+default. Their vulnerability exposure is UNKNOWN, not zero: this report makes no
+claim that they are clean. Re-run with -include-archived to list them.
+`, res.Archived)
+	if res.SkippedDependabotPRs > 0 {
+		fmt.Fprintf(w, "  %d open Dependabot PR(s) sit on those repos, mergeable once unarchived.\n",
+			res.SkippedDependabotPRs)
+	}
 }
 
 // WriteSpotCheck prints one repo audited through the REST path, in the narrower

@@ -6,21 +6,25 @@
 #   2. `affiliations`/`ownerAffiliations` pinned to [OWNER] is the only way to
 #      exclude repos the user merely collaborates on -- see the same warning in
 #      ci-sweep.graphql.
-#   3. PUSHED_AT ordering is what makes a --limit slice mean "the N most
-#      recently touched repos", matching what gh did. Slices are used for quick
-#      samples and by the parity gate, so the ordering has to be deterministic
-#      and documented rather than incidental.
+#   3. PUSHED_AT ordering is what makes a -limit slice mean "the N most recently
+#      touched repos". Slices are used for quick samples and by the parity gate,
+#      so the ordering has to be deterministic and documented rather than
+#      incidental.
 #
 # defaultBranchRef is fetched here so the per-repo "get default branch" call can
 # be skipped later. It is null on a repo with no commits, which is also how
 # commit-less repos are identified without an error round-trip.
 #
-# Forks are NOT filtered here: the caller needs the fork count for the summary
-# and drops them from scope itself.
-query($owner: String!, $pageSize: Int!, $endCursor: String) {
+# Neither forks nor archived repos are filtered here, even though the connection
+# accepts isFork and isArchived. The caller drops them itself because it needs
+# EXACT counts of what it dropped: "195 archived repos were skipped" is a
+# required disclosure, and a server-side filter would hide the number it reports.
+# Every page is fetched for the same reason -- -limit is applied to the filtered
+# result, so that it means "N audited repos" rather than "N before filtering".
+query($owner: String!, $endCursor: String) {
   repositoryOwner(login: $owner) {
     repositories(
-      first: $pageSize
+      first: 100
       after: $endCursor
       affiliations: [OWNER]
       ownerAffiliations: [OWNER]

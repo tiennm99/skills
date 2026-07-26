@@ -17,11 +17,25 @@ type Repo struct {
 	IsArchived    bool
 }
 
-// Inventory is the audit's scope: every repo the owner owns, most recently
-// pushed first, forks included so the caller can count and then drop them.
+// Inventory is every repo the owner owns, most recently pushed first. Forks and
+// archived repos are included so the caller can count them before dropping them.
 type Inventory struct {
 	Repos []Repo
-	Forks int
+}
+
+// Scope is the set of repos to audit plus an exact account of what was left out.
+//
+// The counts are the point. Dropping repos silently would let the report read as
+// clean while whole populations went unmeasured, so every exclusion is carried
+// through to the summary.
+type Scope struct {
+	Repos    []Repo
+	Forks    int
+	Archived int
+	// ArchivedSkipped names the archived repos dropped from Repos. Their open
+	// Dependabot PRs are still disclosed: an archived repo's PR becomes mergeable
+	// the moment someone unarchives, so it must not vanish with the repo.
+	ArchivedSkipped []string
 }
 
 type inventoryPage struct {
@@ -45,27 +59,18 @@ type inventoryPage struct {
 	} `json:"repositoryOwner"`
 }
 
-// FetchInventory pages through the owner's repos, stopping at limit.
+// FetchInventory pages through every repo the owner has.
 //
-// limit slices by push date (see queries/inventory.graphql), so it means "the N
-// most recently touched repos" and is applied BEFORE forks are filtered out --
-// a fork entering the slice therefore makes the audited scope smaller than the
-// limit, which is correct rather than a shortfall.
-func FetchInventory(ctx context.Context, client *ghapi.Client, owner string, limit int) (*Inventory, error) {
-	if limit <= 0 {
-		return nil, fmt.Errorf("repo limit must be positive, got %d", limit)
-	}
-
+// All pages are fetched even when the caller wants a small slice, because the
+// summary has to state exactly how many forks and archived repos were excluded,
+// and a truncated inventory could only guess. Three pages of 100 cost about a
+// second against a sweep that pages nine times regardless.
+func FetchInventory(ctx context.Context, client *ghapi.Client, owner string) (*Inventory, error) {
 	inv := &Inventory{}
 	cursor := ""
 	prefix := owner + "/"
 	for {
-		pageSize := min(100, limit-len(inv.Repos))
-		if pageSize <= 0 {
-			break
-		}
-
-		vars := map[string]any{"owner": owner, "pageSize": pageSize}
+		vars := map[string]any{"owner": owner}
 		if cursor != "" {
 			vars["endCursor"] = cursor
 		}
@@ -94,9 +99,6 @@ func FetchInventory(ctx context.Context, client *ghapi.Client, owner string, lim
 			if node.DefaultBranchRef != nil {
 				r.DefaultBranch = node.DefaultBranchRef.Name
 			}
-			if r.IsFork {
-				inv.Forks++
-			}
 			inv.Repos = append(inv.Repos, r)
 		}
 
@@ -112,17 +114,40 @@ func FetchInventory(ctx context.Context, client *ghapi.Client, owner string, lim
 	return inv, nil
 }
 
-// InScope drops forks unless asked for. Their alerts and Dependabot PRs belong
-// to the upstream project, not to this owner.
-func (inv *Inventory) InScope(includeForks bool) []Repo {
-	if includeForks {
-		return inv.Repos
-	}
-	scope := make([]Repo, 0, len(inv.Repos))
+// InScope selects what to audit and counts what it drops.
+//
+// Forks are excluded because their alerts and Dependabot PRs belong to the
+// upstream project, not to this owner.
+//
+// Archived repos are excluded because nothing on them is actionable without
+// unarchiving: alerts 403, PRs are unmergeable on a read-only repo, and Actions
+// are frozen. They are SKIPPED, not judged -- the summary reports the count and
+// refuses to describe them as clean, since their advisory state is unreadable
+// rather than zero.
+//
+// limit is applied LAST, so it means "N audited repos" rather than "N before
+// filtering" -- on an account that is mostly archived, the latter would quietly
+// audit a handful of repos when asked for fifty.
+func (inv *Inventory) InScope(includeForks, includeArchived bool, limit int) Scope {
+	scope := Scope{Repos: make([]Repo, 0, len(inv.Repos))}
 	for _, r := range inv.Repos {
-		if !r.IsFork {
-			scope = append(scope, r)
+		if r.IsFork {
+			scope.Forks++
+			if !includeForks {
+				continue
+			}
 		}
+		if r.IsArchived {
+			scope.Archived++
+			if !includeArchived {
+				scope.ArchivedSkipped = append(scope.ArchivedSkipped, r.Name)
+				continue
+			}
+		}
+		if limit > 0 && len(scope.Repos) >= limit {
+			continue
+		}
+		scope.Repos = append(scope.Repos, r)
 	}
 	return scope
 }
