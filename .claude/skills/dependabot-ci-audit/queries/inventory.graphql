@@ -1,0 +1,40 @@
+# Repo inventory: the replacement for `gh repo list OWNER`.
+#
+# GraphQL rather than REST /users/{owner}/repos, for three reasons:
+#   1. REST list-by-user omits the authenticated user's PRIVATE repos, which
+#      would silently shrink the audit scope.
+#   2. `affiliations`/`ownerAffiliations` pinned to [OWNER] is the only way to
+#      exclude repos the user merely collaborates on -- see the same warning in
+#      ci-sweep.graphql.
+#   3. PUSHED_AT ordering is what makes a --limit slice mean "the N most
+#      recently touched repos", matching what gh did. Slices are used for quick
+#      samples and by the parity gate, so the ordering has to be deterministic
+#      and documented rather than incidental.
+#
+# defaultBranchRef is fetched here so the per-repo "get default branch" call can
+# be skipped later. It is null on a repo with no commits, which is also how
+# commit-less repos are identified without an error round-trip.
+#
+# Forks are NOT filtered here: the caller needs the fork count for the summary
+# and drops them from scope itself.
+query($owner: String!, $pageSize: Int!, $endCursor: String) {
+  repositoryOwner(login: $owner) {
+    repositories(
+      first: $pageSize
+      after: $endCursor
+      affiliations: [OWNER]
+      ownerAffiliations: [OWNER]
+      orderBy: { field: PUSHED_AT, direction: DESC }
+    ) {
+      totalCount
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        name
+        nameWithOwner
+        isFork
+        isArchived
+        defaultBranchRef { name }
+      }
+    }
+  }
+}

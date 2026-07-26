@@ -16,6 +16,10 @@
 #    other accounts and double-counting repos that match two affiliations.
 #    Symptom: node count exceeds `gh repo list` and the search API, which agree.
 #
+# This file is POSTed verbatim: go-github has no GraphQL support, and expressing
+# it as githubv4 Go structs would delete the two warnings above along with the
+# measurements that justify them.
+#
 # Page size 25 keeps the requested-node budget under GitHub's 500k ceiling:
 # 25 repos x 100 suites x 50 runs = 125,000.
 query($owner: String!, $endCursor: String) {

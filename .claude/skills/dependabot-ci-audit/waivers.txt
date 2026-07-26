@@ -1,4 +1,9 @@
-# Repos where Dependabot alerts are INTENTIONALLY disabled.
+# Repos where Dependabot alerts are INTENTIONALLY disabled, so their Dependabot
+# findings are WAIVED.
+#
+# This is NOT an ignore list. A repo named here is still audited; only the two
+# Dependabot-STATE findings below are suppressed. Skipping a repo outright would
+# make genuine breakage disappear along with the noise.
 #
 # Format: one repo NAME per line (no owner prefix). "#" begins a comment.
 #

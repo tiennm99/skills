@@ -21,6 +21,12 @@
 /.claude/settings.local.json
 # Virtualenv for skill scripts; referenced by the global rules, never committed.
 /.claude/skills/.venv/
+# Compiled output if someone runs `go build` instead of `go run`. Nothing inside
+# an allowed directory is ignored by default, so these need naming explicitly.
+/.claude/skills/dependabot-ci-audit/audit-repos
+/.claude/skills/dependabot-ci-audit/audit-repos.exe
+/.claude/skills/dependabot-ci-audit/verify-parity
+/.claude/skills/dependabot-ci-audit/verify-parity.exe
 
 # To track something new at the top level, add a matching `!/name` line above.
 # Note this means scratch dirs such as /plans and /docs are NOT tracked.
